@@ -15,6 +15,265 @@ import time
 import json
 import pprint
 
+import random
+import torch
+from torch import nn
+from torch import optim
+import torch.nn.functional as F
+from collections import namedtuple
+import numpy as np
+
+from datetime import datetime
+import pprint
+
+BATCH_SIZE = 32
+CAPACITY = 10000
+num_states = 220 # withblock 22 x 10
+num_actions = 40 #x軸10、回転4
+Transition = namedtuple(
+    'Transition', ('state', 'action', 'next_state', 'reward'))
+GAMMA = 0.8  # 時間割引率
+MAX_STEPS = 200  # 1試行のstep数
+NUM_EPISODES = 500  # 最大試行回数
+
+EPISODE = 10
+episode_final = False
+observation = None
+state_ai = None
+
+# a[n] = n^2 - n + 1
+LINE_SCORE_1 = 100
+LINE_SCORE_2 = 300
+LINE_SCORE_3 = 700
+LINE_SCORE_4 = 1300
+GAMEOVER_SCORE = -500
+
+class ReplayMemory:
+
+    def __init__(self, CAPACITY):
+        self.capacity = CAPACITY  # メモリの最大長さ
+        self.memory = []  # 経験を保存する変数
+        self.index = 0  # 保存するindexを示す変数
+
+    def push(self, state, action, state_next, reward):
+        '''transition = (state, action, state_next, reward)をメモリに保存する'''
+
+        if len(self.memory) < self.capacity:
+            self.memory.append(None)  # メモリが満タンでないときは足す
+
+        # namedtupleのTransitionを使用し、値とフィールド名をペアにして保存します
+        self.memory[self.index] = Transition(state, action, state_next, reward)
+
+        self.index = (self.index + 1) % self.capacity  # 保存するindexを1つずらす
+
+    def sample(self, batch_size):
+        '''batch_size分だけ、ランダムに保存内容を取り出す'''
+        return random.sample(self.memory, batch_size)
+
+    def __len__(self):
+        '''関数lenに対して、現在の変数memoryの長さを返す'''
+        return len(self.memory)
+
+
+class Brain:
+
+    def __init__(self, num_states, num_actions):
+        self.num_actions = num_actions  # CartPoleの行動（右に左に押す）の2を取得
+
+        # 経験を記憶するメモリオブジェクトを生成
+        self.memory = ReplayMemory(CAPACITY)
+
+        # ニューラルネットワークを構築
+        self.model = nn.Sequential()
+        self.model.add_module('fc1', nn.Linear(num_states, 32))
+        self.model.add_module('relu1', nn.ReLU())
+        self.model.add_module('fc2', nn.Linear(32, 32))
+        self.model.add_module('relu2', nn.ReLU())
+        self.model.add_module('fc3', nn.Linear(32, num_actions))
+
+        print(self.model)  # ネットワークの形を出力
+
+        # 最適化手法の設定
+        self.optimizer = optim.Adam(self.model.parameters(), lr=0.0001)
+
+    def replay(self):
+        '''Experience Replayでネットワークの結合パラメータを学習'''
+
+        # -----------------------------------------
+        # 1. メモリサイズの確認
+        # -----------------------------------------
+        # 1.1 メモリサイズがミニバッチより小さい間は何もしない
+        if len(self.memory) < BATCH_SIZE:
+            return
+
+        # -----------------------------------------
+        # 2. ミニバッチの作成
+        # -----------------------------------------
+        # 2.1 メモリからミニバッチ分のデータを取り出す
+        transitions = self.memory.sample(BATCH_SIZE)
+
+        # 2.2 各変数をミニバッチに対応する形に変形
+        # transitionsは1stepごとの(state, action, state_next, reward)が、BATCH_SIZE分格納されている
+        # つまり、(state, action, state_next, reward)×BATCH_SIZE
+        # これをミニバッチにしたい。つまり
+        # (state×BATCH_SIZE, action×BATCH_SIZE, state_next×BATCH_SIZE, reward×BATCH_SIZE)にする
+        batch = Transition(*zip(*transitions))
+
+        # 2.3 各変数の要素をミニバッチに対応する形に変形し、ネットワークで扱えるようVariableにする
+        # 例えばstateの場合、[torch.FloatTensor of size 1x4]がBATCH_SIZE分並んでいるのですが、
+        # それを torch.FloatTensor of size BATCH_SIZEx4 に変換します
+        # 状態、行動、報酬、non_finalの状態のミニバッチのVariableを作成
+        # catはConcatenates（結合）のことです。
+        state_batch = torch.cat(batch.state)
+        action_batch = torch.cat(batch.action)
+        reward_batch = torch.cat(batch.reward)
+        non_final_next_states = torch.cat([s for s in batch.next_state
+                                           if s is not None])
+
+        # -----------------------------------------
+        # 3. 教師信号となるQ(s_t, a_t)値を求める
+        # -----------------------------------------
+        # 3.1 ネットワークを推論モードに切り替える
+        self.model.eval()
+
+        # 3.2 ネットワークが出力したQ(s_t, a_t)を求める
+        # self.model(state_batch)は、右左の両方のQ値を出力しており
+        # [torch.FloatTensor of size BATCH_SIZEx2]になっている。
+        # ここから実行したアクションa_tに対応するQ値を求めるため、action_batchで行った行動a_tが右か左かのindexを求め
+        # それに対応するQ値をgatherでひっぱり出す。
+        state_action_values = self.model(state_batch).gather(1, action_batch)
+
+        # 3.3 max{Q(s_t+1, a)}値を求める。ただし次の状態があるかに注意
+        # cartpoleがdoneになっておらず、next_stateがあるかをチェックするインデックスマスクを作成
+        non_final_mask = torch.ByteTensor(tuple(map(lambda s: s is not None,
+                                                    batch.next_state)))
+        # まずは全部0にしておく
+        next_state_values = torch.zeros(BATCH_SIZE)
+
+        # 次の状態があるindexの最大Q値を求める
+        # 出力にアクセスし、max(1)で列方向の最大値の[値、index]を求めます
+        # そしてそのQ値（index=0）を出力します
+        # detachでその値を取り出します
+        next_state_values[non_final_mask] = self.model(
+            non_final_next_states).max(1)[0].detach()
+
+        # 3.4 教師となるQ(s_t, a_t)値を、Q学習の式から求める
+        expected_state_action_values = reward_batch + GAMMA * next_state_values
+
+        # -----------------------------------------
+        # 4. 結合パラメータの更新
+        # -----------------------------------------
+        # 4.1 ネットワークを訓練モードに切り替える
+        self.model.train()
+
+        # 4.2 損失関数を計算する（smooth_l1_lossはHuberloss）
+        # expected_state_action_valuesは
+        # sizeが[minbatch]になっているので、unsqueezeで[minibatch x 1]へ
+        loss = F.smooth_l1_loss(state_action_values,
+                                expected_state_action_values.unsqueeze(1))
+
+        # 4.3 結合パラメータを更新する
+        self.optimizer.zero_grad()  # 勾配をリセット
+        loss.backward()  # バックプロパゲーションを計算
+        self.optimizer.step()  # 結合パラメータを更新
+
+    def decide_action(self, state, episode):
+        '''現在の状態に応じて、行動を決定する'''
+        # ε-greedy法で徐々に最適行動のみを採用する
+        epsilon = 0.5 * (1 / (episode + 1))
+
+        if epsilon <= np.random.uniform(0, 1):
+            self.model.eval()  # ネットワークを推論モードに切り替える
+            with torch.no_grad():
+                #action = self.model(state).max(1)[1].view(1, 1)
+                print("decide_action state")
+                print(state)
+                action = self.model(state)
+                print("decide_action action")
+                print(action)
+                action = action.max(1)[1].view(1,1)
+                print("decide_action max")
+                print(action)
+            # ネットワークの出力の最大値のindexを取り出します = max(1)[1]
+            # .view(1,1)は[torch.LongTensor of size 1]　を size 1x1 に変換します
+
+        else:
+            # 0,1の行動をランダムに返す
+            action = torch.LongTensor(
+                [[random.randrange(self.num_actions)]])  # 0,14の行動をランダムに返す
+            # actionは[torch.LongTensor of size 1x1]の形になります
+
+        return action
+
+
+class Agent:
+    def __init__(self, num_states, num_actions):
+        '''課題の状態と行動の数を設定する'''
+        self.brain = Brain(num_states, num_actions)  # エージェントが行動を決定するための頭脳を生成
+
+    def update_q_function(self):
+        '''Q関数を更新する'''
+        self.brain.replay()
+
+    def get_action(self, state, episode):
+        '''行動を決定する'''
+        action = self.brain.decide_action(state, episode)
+        return action
+
+    def memorize(self, state, action, state_next, reward):
+        '''memoryオブジェクトに、state, action, state_next, rewardの内容を保存する'''
+        self.brain.memory.push(state, action, state_next, reward)
+
+class Block_Controller_AI(object):
+
+    # init parameter
+    board_backboard = 0
+    board_data_width = 0
+    board_data_height = 0
+    ShapeNone_index = 0
+    CurrentShape_class = 0
+    NextShape_class = 0
+
+    agent = Agent(num_states, num_actions)
+
+    # GetNextMove is main function.
+    # input
+    #    GameStatus : this data include all field status, 
+    #                 in detail see the internal GameStatus data.
+    # output
+    #    nextMove : this data include next shape position and the other,
+    #               if return None, do nothing to nextMove.
+    def GetNextMove(self, nextMove, GameStatus, state):
+
+        t1 = datetime.now()
+
+        # print GameStatus
+        print("=================================================>")
+        pprint.pprint(GameStatus, width = 61, compact = True)
+
+        print("getnextmove state")
+        print(state)
+        print("episode")
+        print(GAME_MANEGER.episode)
+        action = self.agent.get_action(state, GAME_MANEGER.episode)
+        action_item = action.item()
+
+        # search best nextMove -->
+        # random sample
+        
+        nextMove["strategy"]["direction"] = action_item % 4
+        nextMove["strategy"]["x"] = action_item % 10
+            
+        nextMove["strategy"]["y_operation"] = 1
+        nextMove["strategy"]["y_moveblocknum"] = 1
+
+        # search best nextMove <--
+
+        # return nextMove
+        print("===", datetime.now() - t1)
+        print(nextMove)
+        return nextMove, action
+
 def get_option(game_time, manual, use_sample, drop_speed, random_seed, obstacle_height, obstacle_probability, resultlogjson):
     argparser = ArgumentParser()
     argparser.add_argument('--game_time', type=int,
@@ -45,15 +304,13 @@ def get_option(game_time, manual, use_sample, drop_speed, random_seed, obstacle_
 
 class Game_Manager(QMainWindow):
 
-    # a[n] = n^2 - n + 1
-    LINE_SCORE_1 = 100
-    LINE_SCORE_2 = 300
-    LINE_SCORE_3 = 700
-    LINE_SCORE_4 = 1300
-    GAMEOVER_SCORE = -500
-
     def __init__(self):
         super().__init__()
+        self.agent = Agent(num_states, num_actions)
+        self.episode = 0
+        self.step = 0
+
+
         self.isStarted = False
         self.isPaused = False
         self.nextMove = None
@@ -126,6 +383,15 @@ class Game_Manager(QMainWindow):
         self.setFixedSize(self.tboard.width() + self.sidePanel.width(),
                           self.sidePanel.height() + self.statusbar.height())
 
+        observation = BOARD_DATA.getDataWithCurrentBlock()
+        print("observation:{0}".format(observation))
+        state_ai = np.array(observation)  # 観測をそのまま状態sとして使用
+        state_ai = torch.from_numpy(state_ai).type(torch.FloatTensor)  # NumPy変数をPyTorchのテンソルに変換
+        state_ai = torch.unsqueeze(state_ai, 0)  # size 4をsize 1x4に変換
+        print("initUI state")
+        print(state_ai.size())
+        print(state_ai)
+
     def center(self):
         screen = QDesktopWidget().screenGeometry()
         size = self.geometry()
@@ -156,10 +422,30 @@ class Game_Manager(QMainWindow):
 
         self.updateWindow()
 
+    def reset_episode(self):
+        self.tboard.score = 0
+        self.tboard.dropdownscore = 0
+        self.tboard.linescore = 0
+        self.tboard.line = 0
+        self.tboard.line_score_stat = [0, 0, 0, 0]
+        self.tboard.reset_cnt = 0
+        self.tboard.start_time = time.time()
+        self.step = 0
+        self.episode += 1
+        BOARD_DATA.clear()
+        BOARD_DATA.createNewPiece()
+        observation = BOARD_DATA.getDataWithCurrentBlock()
+        print("observation:{0}".format(observation))
+        state_ai = np.array(observation)  # 観測をそのまま状態sとして使用
+        state_ai = torch.from_numpy(state_ai).type(torch.FloatTensor)  # NumPy変数をPyTorchのテンソルに変換
+        state_ai = torch.unsqueeze(state_ai, 0)  # size 4をsize 1x4に変換
+        print("reset episode state")
+        print(state_ai)
+
     def resetfield(self):
         # self.tboard.score = 0
         self.tboard.reset_cnt += 1
-        self.tboard.score += Game_Manager.GAMEOVER_SCORE
+        self.tboard.score += GAMEOVER_SCORE
         BOARD_DATA.clear()
         BOARD_DATA.createNewPiece()
 
@@ -167,6 +453,9 @@ class Game_Manager(QMainWindow):
         self.tboard.updateData()
         self.sidePanel.updateData()
         self.update()
+        GAME_MANEGER.step += 1
+        print("step:{0}".format(GAME_MANEGER.step))
+        print("episode:{0}".format(GAME_MANEGER.episode))
 
     def timerEvent(self, event):
         # callback function for user control
@@ -193,8 +482,13 @@ class Game_Manager(QMainWindow):
                 # get nextMove from GameController
                 GameStatus = self.getGameStatus()
 
+                state_ai = GameStatus["field_info"]["withblock"]
+                state_ai = np.array(state_ai)  # 観測をそのまま状態sとして使用
+                state_ai = torch.from_numpy(state_ai).type(torch.FloatTensor)  # NumPy変数をPyTorchのテンソルに変換
+                state_ai = torch.unsqueeze(state_ai, 0)  # size 4をsize 1x4に変換
+
                 if self.use_sample == "y":
-                    self.nextMove = BLOCK_CONTROLLER_SAMPLE.GetNextMove(nextMove, GameStatus)
+                    self.nextMove, action = BLOCK_CONTROLLER_AI.GetNextMove(nextMove, GameStatus, state_ai)
                 else:
                     self.nextMove = BLOCK_CONTROLLER.GetNextMove(nextMove, GameStatus)
 
@@ -250,13 +544,66 @@ class Game_Manager(QMainWindow):
                         # if already movedown next_y_moveblocknum block
                         break
 
+            observation_next = BOARD_DATA.getDataWithCurrentBlock()
+
             self.UpdateScore(removedlines, dropdownlines)
+
+            # elapsed_time = round(time.time() - self.start_time, 3)
 
             # check reset field
             if BOARD_DATA.currentY < 1:
+                state_next_ai = None
                 # if Piece cannot movedown and stack, reset field
                 print("reset field.")
-                self.resetfield()
+                #self.resetfield()
+                self.reset_episode()
+                reward = torch.FloatTensor([GAMEOVER_SCORE/100])
+
+            # elif self.game_time >= 0 and Board.updateData.elapsed_time > self.game_time and GameStatus["judge_info"]["gameover_count"] == 0:
+            #     state_next_ai = None
+            #     reward = torch.FloatTensor([1.0])
+
+            elif self.step%10 == 0 :
+                state_next_ai = np.array(observation_next)
+                state_next_ai = torch.from_numpy(state_next_ai).type(torch.FloatTensor)
+                state_next_ai = torch.unsqueeze(state_next_ai, 0)
+                reward = torch.FloatTensor([self.step/100])
+
+            elif removedlines > 0:
+                state_next_ai = np.array(observation_next)
+                state_next_ai = torch.from_numpy(state_next_ai).type(torch.FloatTensor)
+                state_next_ai = torch.unsqueeze(state_next_ai, 0)
+
+                if removedlines == 1:
+                    linescore = LINE_SCORE_1
+                elif removedlines == 2:
+                    linescore = LINE_SCORE_2
+                elif removedlines == 3:
+                    linescore = LINE_SCORE_3
+                elif removedlines == 4:
+                    linescore = LINE_SCORE_4
+
+                reward = torch.FloatTensor([linescore/100])
+            
+            else:
+                state_next_ai = np.array(observation_next)
+                state_next_ai = torch.from_numpy(state_next_ai).type(torch.FloatTensor)
+                state_next_ai = torch.unsqueeze(state_next_ai, 0)
+                reward = torch.FloatTensor([0.0])
+
+            print("state_ai")
+            print(state_ai)
+            print("action")
+            print(action)
+            print("state_next_ai")
+            print(state_next_ai)
+            print("reward")
+            print(reward)
+            self.agent.memorize(state_ai, action, state_next_ai, reward)
+
+            self.agent.update_q_function()
+
+            state_ai = state_next_ai
 
             # init nextMove
             self.nextMove = None
@@ -269,13 +616,13 @@ class Game_Manager(QMainWindow):
     def UpdateScore(self, removedlines, dropdownlines):
         # calculate and update current score
         if removedlines == 1:
-            linescore = Game_Manager.LINE_SCORE_1
+            linescore = LINE_SCORE_1
         elif removedlines == 2:
-            linescore = Game_Manager.LINE_SCORE_2
+            linescore = LINE_SCORE_2
         elif removedlines == 3:
-            linescore = Game_Manager.LINE_SCORE_3
+            linescore = LINE_SCORE_3
         elif removedlines == 4:
-            linescore = Game_Manager.LINE_SCORE_4
+            linescore = LINE_SCORE_4
         else:
             linescore = 0
         dropdownscore = dropdownlines
@@ -412,11 +759,11 @@ class Game_Manager(QMainWindow):
         status["debug_info"]["linescore"] = self.tboard.linescore
         status["debug_info"]["line_score_stat"] = self.tboard.line_score_stat
         status["debug_info"]["shape_info_stat"] = BOARD_DATA.shape_info_stat
-        status["debug_info"]["line_score"]["1"] = Game_Manager.LINE_SCORE_1
-        status["debug_info"]["line_score"]["2"] = Game_Manager.LINE_SCORE_2
-        status["debug_info"]["line_score"]["3"] = Game_Manager.LINE_SCORE_3
-        status["debug_info"]["line_score"]["4"] = Game_Manager.LINE_SCORE_4
-        status["debug_info"]["line_score"]["gameover"] = Game_Manager.GAMEOVER_SCORE
+        status["debug_info"]["line_score"]["1"] = LINE_SCORE_1
+        status["debug_info"]["line_score"]["2"] = LINE_SCORE_2
+        status["debug_info"]["line_score"]["3"] = LINE_SCORE_3
+        status["debug_info"]["line_score"]["4"] = LINE_SCORE_4
+        status["debug_info"]["line_score"]["gameover"] = GAMEOVER_SCORE
         status["debug_info"]["shape_info"]["shapeNone"]["index"] = Shape.shapeNone
         status["debug_info"]["shape_info"]["shapeI"]["index"] = Shape.shapeI
         status["debug_info"]["shape_info"]["shapeI"]["color"] = "red"
@@ -499,11 +846,11 @@ class Game_Manager(QMainWindow):
         ## debug_info
         status["debug_info"]["line_score_stat"] = self.tboard.line_score_stat
         status["debug_info"]["shape_info_stat"] = BOARD_DATA.shape_info_stat
-        status["debug_info"]["line_score"]["1"] = Game_Manager.LINE_SCORE_1
-        status["debug_info"]["line_score"]["2"] = Game_Manager.LINE_SCORE_2
-        status["debug_info"]["line_score"]["3"] = Game_Manager.LINE_SCORE_3
-        status["debug_info"]["line_score"]["4"] = Game_Manager.LINE_SCORE_4
-        status["debug_info"]["line_score"]["gameover"] = Game_Manager.GAMEOVER_SCORE
+        status["debug_info"]["line_score"]["1"] = LINE_SCORE_1
+        status["debug_info"]["line_score"]["2"] = LINE_SCORE_2
+        status["debug_info"]["line_score"]["3"] = LINE_SCORE_3
+        status["debug_info"]["line_score"]["4"] = LINE_SCORE_4
+        status["debug_info"]["line_score"]["gameover"] = GAMEOVER_SCORE
         status["debug_info"]["shape_info"]["shapeNone"]["index"] = Shape.shapeNone
         status["debug_info"]["shape_info"]["shapeI"]["index"] = Shape.shapeI
         status["debug_info"]["shape_info"]["shapeI"]["color"] = "red"
@@ -693,9 +1040,16 @@ class Board(QFrame):
                     f.write(GameStatusJson)
 
             #sys.exit(app.exec_())
-            sys.exit(0)
+            #sys.exit(0)
+            GAME_MANEGER.reset_episode()
+            GAME_MANEGER.episode += 1
+            GAME_MANEGER.step = 0
+            print("episode:{0}".format(GAME_MANEGER.episode))
+            # if(GAME_MANEGER.episode == EPISODE):
+            #     sys.exit(0)
 
 if __name__ == '__main__':
     app = QApplication([])
     GAME_MANEGER = Game_Manager()
+    BLOCK_CONTROLLER_AI = Block_Controller_AI()
     sys.exit(app.exec_())

@@ -28,11 +28,11 @@ import pprint
 
 BATCH_SIZE = 32
 CAPACITY = 10000
-num_states = 220 # withblock 22 x 10
+num_states = 220 # withblock 22 x 10 +3
 num_actions = 40 #x軸10、回転4
 Transition = namedtuple(
     'Transition', ('state', 'action', 'next_state', 'reward'))
-GAMMA = 0.8  # 時間割引率
+GAMMA = 0.95  # 時間割引率
 MAX_STEPS = 200  # 1試行のstep数
 NUM_EPISODES = 500  # 最大試行回数
 
@@ -79,6 +79,8 @@ class Brain:
 
     def __init__(self, num_states, num_actions):
         self.num_actions = num_actions  # CartPoleの行動（右に左に押す）の2を取得
+
+        self.epsilon = 1.0
 
         # 経験を記憶するメモリオブジェクトを生成
         self.memory = ReplayMemory(CAPACITY)
@@ -180,7 +182,10 @@ class Brain:
     def decide_action(self, state, episode):
         '''現在の状態に応じて、行動を決定する'''
         # ε-greedy法で徐々に最適行動のみを採用する
-        epsilon = 0.5 * (1 / (episode + 1))
+        # epsilon = 0.5 * (1 / (episode + 1))
+        epsilon = 1.0 - (episode+1)/1000000
+        print("episilon")
+        print(epsilon)
 
         if epsilon <= np.random.uniform(0, 1):
             self.model.eval()  # ネットワークを推論モードに切り替える
@@ -384,6 +389,7 @@ class Game_Manager(QMainWindow):
                           self.sidePanel.height() + self.statusbar.height())
 
         observation = BOARD_DATA.getDataWithCurrentBlock()
+        state_back = BOARD_DATA.getData()
         print("observation:{0}".format(observation))
         state_ai = np.array(observation)  # 観測をそのまま状態sとして使用
         state_ai = torch.from_numpy(state_ai).type(torch.FloatTensor)  # NumPy変数をPyTorchのテンソルに変換
@@ -435,6 +441,7 @@ class Game_Manager(QMainWindow):
         BOARD_DATA.clear()
         BOARD_DATA.createNewPiece()
         observation = BOARD_DATA.getDataWithCurrentBlock()
+        state_back = BOARD_DATA.getData()
         print("observation:{0}".format(observation))
         state_ai = np.array(observation)  # 観測をそのまま状態sとして使用
         state_ai = torch.from_numpy(state_ai).type(torch.FloatTensor)  # NumPy変数をPyTorchのテンソルに変換
@@ -456,6 +463,72 @@ class Game_Manager(QMainWindow):
         GAME_MANEGER.step += 1
         print("step:{0}".format(GAME_MANEGER.step))
         print("episode:{0}".format(GAME_MANEGER.episode))
+
+    def get_holes(self, board):
+        board = np.array(board).reshape([22, 10])
+        hole_num = 0
+        col = 0
+        for col in range(0, 10):
+            board_col = board[:, col].tolist()
+            row = 0
+            while row < 22 and board_col[row] == 0:
+                row += 1
+            hole_num += len([x for x in board_col[row+1:] if x==0])
+        
+        return hole_num
+
+    def get_bumpiness_and_height(self, board):
+        board = np.array(board).reshape(22, 10)
+        mask = board != 0
+        invert_heights = np.where(mask.any(axis=0), np.argmax(mask, axis=0), 22)
+        heights = 22 - invert_heights
+        total_height = np.sum(heights)
+        currs = heights[:-1]
+        nexts = heights[1:]
+        diffs = np.abs(currs - nexts)
+        total_bumpiness = np.sum(diffs)
+        return total_bumpiness, total_height
+
+    def get_row_connection(self, board):
+        board = np.array(board).reshape(22, 10)
+        mask = board != 0
+        row_sum = np.sum(mask, axis=1)
+        row_index = np.where(row_sum > 0)[0]
+        max_conect_dict = {}
+        max_conect_total = 0
+        for row in row_index:
+            mask_row = mask[row,:]
+            conect_cnt = 0
+            conect_list = []
+            for col in range(mask_row.shape[0]):
+                if mask_row[col] == True:
+                    conect_cnt += 1
+                else:
+                    conect_list.append(conect_cnt)
+                    conect_cnt = 0
+            max_conect_num = max(conect_list)
+            if max_conect_num != 1:
+                max_conect_total += max_conect_num
+        return max_conect_total
+        #     max_conect_dict[row] = max_conect_num
+        # print(max_conect_dict) 
+
+        #     conect_list.append()
+        # print(conect_list)
+
+    def get_piece_mask(self, board):
+        board = np.array(board).reshape(22, 10)
+        mask = board != 0
+        index = np.where(mask > 0)
+        index_total = len(index[0])
+        for i in range(index_total):
+            if(index[1][i]+1 <= 9):
+                mask[index[0][i], index[1][i]+1] = True
+            if(index[1][i]-1 >= 0):
+                mask[index[0][i], index[1][i]-1] = True
+
+        mask = mask.astype(np.int)
+        return mask
 
     def timerEvent(self, event):
         # callback function for user control
@@ -481,6 +554,8 @@ class Game_Manager(QMainWindow):
                             }
                 # get nextMove from GameController
                 GameStatus = self.getGameStatus()
+
+                state_back = BOARD_DATA.getData()
 
                 state_ai = GameStatus["field_info"]["withblock"]
                 state_ai = np.array(state_ai)  # 観測をそのまま状態sとして使用
@@ -544,12 +619,14 @@ class Game_Manager(QMainWindow):
                         # if already movedown next_y_moveblocknum block
                         break
 
-            observation_next = BOARD_DATA.getDataWithCurrentBlock()
+            observation_next = BOARD_DATA.getData()
+            state_back_next = BOARD_DATA.getData()
 
             self.UpdateScore(removedlines, dropdownlines)
 
             # elapsed_time = round(time.time() - self.start_time, 3)
 
+            reward = 0
             # check reset field
             if BOARD_DATA.currentY < 1:
                 state_next_ai = None
@@ -557,7 +634,7 @@ class Game_Manager(QMainWindow):
                 print("reset field.")
                 #self.resetfield()
                 self.reset_episode()
-                reward = torch.FloatTensor([GAMEOVER_SCORE/100])
+                reward = torch.FloatTensor([GAMEOVER_SCORE/10])
 
             # elif self.game_time >= 0 and Board.updateData.elapsed_time > self.game_time and GameStatus["judge_info"]["gameover_count"] == 0:
             #     state_next_ai = None
@@ -583,7 +660,7 @@ class Game_Manager(QMainWindow):
                 elif removedlines == 4:
                     linescore = LINE_SCORE_4
 
-                reward = torch.FloatTensor([linescore/100])
+                reward = torch.FloatTensor([linescore/10])
             
             else:
                 state_next_ai = np.array(observation_next)
@@ -591,12 +668,63 @@ class Game_Manager(QMainWindow):
                 state_next_ai = torch.unsqueeze(state_next_ai, 0)
                 reward = torch.FloatTensor([0.0])
 
-            print("state_ai")
-            print(state_ai)
-            print("action")
-            print(action)
-            print("state_next_ai")
-            print(state_next_ai)
+            conect_num = self.get_row_connection(state_back)
+            conect_next_num = self.get_row_connection(state_back_next)
+            only_put_piece = np.array(state_back_next) - np.array(state_back)
+            only_put_piece_mask = only_put_piece != 0
+            only_put_piece_around_mask = self.get_piece_mask(only_put_piece)
+            
+            hoge = only_put_piece_around_mask - only_put_piece_mask.astype(np.int).reshape(22, 10)
+            rinsetu = hoge * np.array(state_back_next).reshape(22, 10)
+            print(hoge)
+            flag = rinsetu.sum()
+            print("flag")
+            print(flag)
+
+            if(flag > 0):
+                conect_diff = conect_next_num - conect_num
+                reward += torch.FloatTensor([conect_diff])
+                print("conect diff")
+                print(conect_diff)
+
+            # else:
+            #     conect_put_num = self.get_row_connection(only_put_piece)
+
+            print("conect num")
+            print(conect_num)
+            print("conect next num")
+            print(conect_next_num)
+            
+
+
+            # hole_num = self.get_holes(state_back)
+            # print("hole_num")
+            # print(hole_num)
+            # next_hole_num = self.get_holes(state_back_next)
+            # print("next_hole_num")
+            # print(next_hole_num)
+
+            # if(hole_num - next_hole_num < 0):
+            #     reward += torch.FloatTensor([-10])
+            # elif(hole_num - next_hole_num > 0):
+            #     reward += torch.FloatTensor([10])
+
+            bump, heig = self.get_bumpiness_and_height(state_back_next)
+            # print("bump")
+            # print(bump)
+            # print("height")
+            # print(heig)
+            if (state_back_next != None):
+                print(np.array(state_back_next).reshape(22, 10))
+
+            self.get_row_connection(state_back_next)
+            # print("state_ai")
+            # print(np.array(state_ai).reshape(22, 10))
+            # print("action")
+            # print(action)
+            # print("state_next_ai")
+            # if(state_next_ai != None):
+            #     print(np.array(state_next_ai).reshape(22, 10))
             print("reward")
             print(reward)
             self.agent.memorize(state_ai, action, state_next_ai, reward)

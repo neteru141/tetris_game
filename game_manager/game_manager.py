@@ -8,7 +8,6 @@ from PyQt5.QtGui import QPainter, QColor
 
 from board_manager import BOARD_DATA, Shape
 from block_controller import BLOCK_CONTROLLER
-from block_controller_sample import BLOCK_CONTROLLER_SAMPLE
 
 from argparse import ArgumentParser
 import time
@@ -54,6 +53,10 @@ class Game_Manager(QMainWindow):
 
     def __init__(self):
         super().__init__()
+
+        self.episode = 0
+        self.step = 0
+
         self.isStarted = False
         self.isPaused = False
         self.nextMove = None
@@ -163,10 +166,78 @@ class Game_Manager(QMainWindow):
         BOARD_DATA.clear()
         BOARD_DATA.createNewPiece()
 
+    def reset_episode(self):
+        self.tboard.score = 0
+        self.tboard.dropdownscore = 0
+        self.tboard.linescore = 0
+        self.tboard.line = 0
+        self.tboard.line_score_stat = [0, 0, 0, 0]
+        self.tboard.reset_cnt = 0
+        self.tboard.start_time = time.time()
+        
+        self.episode += 1
+        self.step = 0
+
+        BOARD_DATA.clear()
+        BOARD_DATA.createNewPiece()
+
+        GameStatus = self.getGameStatus()
+        BLOCK_CONTROLLER.reset_state(GameStatus)
+
     def updateWindow(self):
         self.tboard.updateData()
         self.sidePanel.updateData()
         self.update()
+
+    def move_block(self):
+        if self.nextMove:
+            # shape direction operation
+            next_x = self.nextMove["strategy"]["x"]
+            next_y_moveblocknum = self.nextMove["strategy"]["y_moveblocknum"]
+            y_operation = self.nextMove["strategy"]["y_operation"]
+            next_direction = self.nextMove["strategy"]["direction"]
+            k = 0
+            while BOARD_DATA.currentDirection != next_direction and k < 4:
+                ret = BOARD_DATA.rotateRight()
+                if ret == False:
+                    print("cannot rotateRight")
+                    break
+                k += 1
+            # x operation
+            k = 0
+            while BOARD_DATA.currentX != next_x and k < 5:
+                if BOARD_DATA.currentX > next_x:
+                    ret = BOARD_DATA.moveLeft()
+                    if ret == False:
+                        print("cannot moveLeft")
+                        break
+                elif BOARD_DATA.currentX < next_x:
+                    ret = BOARD_DATA.moveRight()
+                    if ret == False:
+                        print("cannot moveRight")
+                        break
+                k += 1
+
+        # dropdown/movedown lines
+        dropdownlines = 0
+        removedlines = 0
+        if y_operation == 1: # dropdown
+            removedlines, dropdownlines = BOARD_DATA.dropDown()
+        else: # movedown, with next_y_moveblocknum lines
+            k = 0
+            while True:
+                removedlines, movedownlines = BOARD_DATA.moveDown()
+                if movedownlines < 1:
+                    # if already dropped
+                    break
+                k += 1
+                if k >= next_y_moveblocknum:
+                    # if already movedown next_y_moveblocknum block
+                    break
+
+        self.UpdateScore(removedlines, dropdownlines)
+
+        return removedlines
 
     def timerEvent(self, event):
         # callback function for user control
@@ -193,10 +264,13 @@ class Game_Manager(QMainWindow):
                 # get nextMove from GameController
                 GameStatus = self.getGameStatus()
 
-                if self.use_sample == "y":
-                    self.nextMove = BLOCK_CONTROLLER_SAMPLE.GetNextMove(nextMove, GameStatus)
-                else:
-                    self.nextMove = BLOCK_CONTROLLER.GetNextMove(nextMove, GameStatus)
+                # step count up
+                self.step += 1
+
+                # if self.use_sample == "y":
+                self.nextMove = BLOCK_CONTROLLER.GetNextMove(nextMove, GameStatus)
+                # else:
+                #     self.nextMove = BLOCK_CONTROLLER.GetNextMove(nextMove, GameStatus)
 
                 if self.manual in ("y", "g"):
                     # ignore nextMove, for manual controll
@@ -205,52 +279,8 @@ class Game_Manager(QMainWindow):
                     self.nextMove["strategy"]["y_operation"] = 0
                     self.nextMove["strategy"]["direction"] = BOARD_DATA.currentDirection
 
-            if self.nextMove:
-                # shape direction operation
-                next_x = self.nextMove["strategy"]["x"]
-                next_y_moveblocknum = self.nextMove["strategy"]["y_moveblocknum"]
-                y_operation = self.nextMove["strategy"]["y_operation"]
-                next_direction = self.nextMove["strategy"]["direction"]
-                k = 0
-                while BOARD_DATA.currentDirection != next_direction and k < 4:
-                    ret = BOARD_DATA.rotateRight()
-                    if ret == False:
-                        print("cannot rotateRight")
-                        break
-                    k += 1
-                # x operation
-                k = 0
-                while BOARD_DATA.currentX != next_x and k < 5:
-                    if BOARD_DATA.currentX > next_x:
-                        ret = BOARD_DATA.moveLeft()
-                        if ret == False:
-                            print("cannot moveLeft")
-                            break
-                    elif BOARD_DATA.currentX < next_x:
-                        ret = BOARD_DATA.moveRight()
-                        if ret == False:
-                            print("cannot moveRight")
-                            break
-                    k += 1
-
-            # dropdown/movedown lines
-            dropdownlines = 0
-            removedlines = 0
-            if y_operation == 1: # dropdown
-                removedlines, dropdownlines = BOARD_DATA.dropDown()
-            else: # movedown, with next_y_moveblocknum lines
-                k = 0
-                while True:
-                    removedlines, movedownlines = BOARD_DATA.moveDown()
-                    if movedownlines < 1:
-                        # if already dropped
-                        break
-                    k += 1
-                    if k >= next_y_moveblocknum:
-                        # if already movedown next_y_moveblocknum block
-                        break
-
-            self.UpdateScore(removedlines, dropdownlines)
+            remove_lines = self.move_block()
+            BLOCK_CONTROLLER.train(GameStatus, remove_lines)
 
             # check reset field
             if BOARD_DATA.currentY < 1:
@@ -263,6 +293,7 @@ class Game_Manager(QMainWindow):
 
             # update window
             self.updateWindow()
+
         else:
             super(Game_Manager, self).timerEvent(event)
 
@@ -320,6 +351,8 @@ class Game_Manager(QMainWindow):
                         "score":"none",
                         "line":"none",
                         "block_index":"none",
+                        "episode":"none",
+                        "step":"none",
                       },
                   "debug_info":
                       {
@@ -407,6 +440,9 @@ class Game_Manager(QMainWindow):
         status["judge_info"]["score"] = self.tboard.score
         status["judge_info"]["line"] = self.tboard.line
         status["judge_info"]["block_index"] = self.block_index
+        status["judge_info"]["episode"] = self.episode
+        status["judge_info"]["step"] = self.step
+
         ## debug_info
         status["debug_info"]["dropdownscore"] = self.tboard.dropdownscore
         status["debug_info"]["linescore"] = self.tboard.linescore
@@ -493,6 +529,8 @@ class Game_Manager(QMainWindow):
                         "score":"none",
                         "line":"none",
                         "block_index":"none",
+                        "episode":"none",
+                        "step":"none",
                       },
                   }
         # update status
@@ -526,6 +564,8 @@ class Game_Manager(QMainWindow):
         status["judge_info"]["score"] = self.tboard.score
         status["judge_info"]["line"] = self.tboard.line
         status["judge_info"]["block_index"] = self.block_index
+        status["judge_info"]["episode"] = self.episode
+        status["judge_info"]["step"] = self.step
         return json.dumps(status)
 
     def keyPressEvent(self, event):
@@ -660,9 +700,10 @@ class Board(QFrame):
         self.msg2Statusbar.emit(status_str)
         self.update()
 
-        if self.game_time >= 0 and elapsed_time > self.game_time:
+        #if self.game_time >= 0 and elapsed_time > self.game_time:
+        if GAME_MANEGER.step >= 180:
             # finish game.
-            print("game finish!! elapsed time: " + elapsed_time_str + "/game_time: " + str(self.game_time))
+            print("game finish!! elapsed time: " + elapsed_time_str + "/game_time: " + str(self.game_time) + "/step: " + str(GAME_MANEGER.step))
             print("")
             print("##### YOUR_RESULT #####")
             print(status_str)
@@ -692,8 +733,9 @@ class Board(QFrame):
                     GameStatusJson = GAME_MANEGER.getGameStatusJson()
                     f.write(GameStatusJson)
 
+            GAME_MANEGER.reset_episode()
             #sys.exit(app.exec_())
-            sys.exit(0)
+            #sys.exit(0)
 
 if __name__ == '__main__':
     app = QApplication([])

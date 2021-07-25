@@ -22,7 +22,7 @@ echo "level: $VALUE_L"
 echo "is_manual_controll: $IS_MANUAL_CONTROLL"
 
 ## set field parameter for level 1
-DROP_SPEED="1"        # drop speed (s)
+DROP_SPEED="1000"        # drop speed (s)
 RANDOM_SEED="0"          # random seed for field
 OBSTACLE_HEIGHT="0"      # obstacle height (blocks)
 OBSTACLE_PROBABILITY="0" # obstacle probability (percent)

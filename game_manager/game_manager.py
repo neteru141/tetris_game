@@ -126,6 +126,8 @@ class Brain:
         # ε-greedy法で徐々に最適行動のみを採用する
         # epsilon = 0.5 * (1 / (episode + 1))
         epsilon = 1.0 - episode/100000
+        if epsilon <= 0:
+            epsilon = 0
 
         print("epsilon : {0}".format(epsilon))
 
@@ -304,7 +306,7 @@ class Game_Manager(QMainWindow):
         self.episode = 0
         self.step = 0
 
-        self.num_states = 5
+        self.num_states = 7
         self.num_actions = 40
 
         self.agent = Agent(self.num_states, self.num_actions)
@@ -318,8 +320,8 @@ class Game_Manager(QMainWindow):
         self.state_next = None
         self.reward = None
 
-        self.state_property = []
-        self.state_property_next = []
+        self.state_property = None
+        self.state_property_next = None
 
         self.isStarted = False
         self.isPaused = False
@@ -475,6 +477,42 @@ class Game_Manager(QMainWindow):
         total_bumpiness = np.sum(diffs)
         return total_bumpiness, total_height
 
+    def get_row_connection(self, board):
+        board = np.array(board).reshape(22, 10)
+        mask = board != 0
+        row_sum = np.sum(mask, axis=1)
+        row_index = np.where(row_sum > 0)[0]
+        max_conect_dict = {}
+        max_conect_total = 0
+        for row in row_index:
+            mask_row = mask[row,:]
+            conect_cnt = 0
+            conect_list = []
+            for col in range(mask_row.shape[0]):
+                if mask_row[col] == True:
+                    conect_cnt += 1
+                else:
+                    conect_list.append(conect_cnt)
+                    conect_cnt = 0
+            max_conect_num = max(conect_list)
+            if max_conect_num != 1:
+                max_conect_total += max_conect_num
+        return max_conect_total
+
+    def get_boutyou_piece_mask(self, board):
+        board = np.array(board).reshape(22, 10)
+        mask = board != 0
+        index = np.where(mask > 0)
+        index_total = len(index[0])
+        for i in range(index_total):
+            if(index[1][i]+1 <= 9):
+                mask[index[0][i], index[1][i]+1] = True
+            if(index[1][i]-1 >= 0):
+                mask[index[0][i], index[1][i]-1] = True
+
+        mask = mask.astype(np.int)
+        return mask
+
     
     def timerEvent(self, event):
         # callback function for user control
@@ -500,10 +538,9 @@ class Game_Manager(QMainWindow):
                             }
                 # get nextMove from GameController
                 GameStatus = self.getGameStatus()
+                self.observation = GameStatus["field_info"]["backboard"]
 
                 self.done = False
-                self.state_property = []
-                self.state_property_next = []
 
                 # self.observation = GameStatus["field_info"]["withblock"]
                 # self.state = np.array(self.observation)
@@ -512,12 +549,13 @@ class Game_Manager(QMainWindow):
                 # self.state = self.state / 7.0
 
                 if(self.step == 0):
-                    self.observation = GameStatus["field_info"]["backboard"]
                     bumpiness, height = self.get_bumpiness_and_height(self.observation)
                     holes = self.get_holes(self.observation)
                     removedlines = 0
                     dropdownlines = 0
-                    self.state_property = [removedlines, dropdownlines, holes, bumpiness, height]
+                    current_block = GameStatus["block_info"]["currentShape"]["index"]
+                    next_block = GameStatus["block_info"]["nextShape"]["index"]
+                    self.state_property = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
                     self.state_property = np.array(self.state_property)
                     self.state_property = torch.from_numpy(self.state_property).type(torch.FloatTensor)
                     self.state_property = torch.unsqueeze(self.state_property, 0)
@@ -624,13 +662,15 @@ class Game_Manager(QMainWindow):
                 self.reward = torch.FloatTensor([Game_Manager.GAMEOVER_SCORE])
                 self.done = True
 
-            if removedlines > 0:
+            elif removedlines > 0:
                 bumpiness, height = self.get_bumpiness_and_height(self.observation_next)
                 holes = self.get_holes(self.observation_next)
-                self.state_property = [removedlines, dropdownlines, holes, bumpiness, height]
-                self.state_property = np.array(self.state_property)
-                self.state_property = torch.from_numpy(self.state_property).type(torch.FloatTensor)
-                self.state_property = torch.unsqueeze(self.state_property, 0)
+                current_block = GameStatus["block_info"]["currentShape"]["index"]
+                next_block = GameStatus["block_info"]["nextShape"]["index"]
+                self.state_property_next = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
+                self.state_property_next = np.array(self.state_property_next)
+                self.state_property_next = torch.from_numpy(self.state_property_next).type(torch.FloatTensor)
+                self.state_property_next = torch.unsqueeze(self.state_property_next, 0)
 
                 if removedlines == 1:
                     linescore = Game_Manager.LINE_SCORE_1
@@ -646,15 +686,45 @@ class Game_Manager(QMainWindow):
             else:
                 bumpiness, height = self.get_bumpiness_and_height(self.observation_next)
                 holes = self.get_holes(self.observation_next)
-                self.state_property = [removedlines, dropdownlines, holes, bumpiness, height]
-                self.state_property = np.array(self.state_property)
-                self.state_property = torch.from_numpy(self.state_property).type(torch.FloatTensor)
-                self.state_property = torch.unsqueeze(self.state_property, 0)
+                current_block = GameStatus["block_info"]["currentShape"]["index"]
+                next_block = GameStatus["block_info"]["nextShape"]["index"]
+                self.state_property_next = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
+                self.state_property_next = np.array(self.state_property_next)
+                self.state_property_next = torch.from_numpy(self.state_property_next).type(torch.FloatTensor)
+                self.state_property_next = torch.unsqueeze(self.state_property_next, 0)
                 self.reward = torch.FloatTensor([0.0])
+
+                
+            ### connect reward ###
+            # connect_num = self.get_row_connection(self.observation)
+            # connect_next_num = self.get_row_connection(self.observation_next)
+            # print("observation : \n {0}".format(np.array(self.observation).reshape(22,10)))
+            # print("connect_num : {0}".format(connect_num))
+            # print("observation_next : \n {0}".format(np.array(self.observation_next).reshape(22,10)))
+            # print("connect_num_next : {0}".format(connect_next_num))
+
+
+            # only_put_piece = np.array(self.observation_next) - np.array(self.observation)
+            # only_put_piece_mask = only_put_piece != 0
+            # only_put_piece_mask_boutyou = self.get_boutyou_piece_mask(only_put_piece)
+            # only_put_piece_around = only_put_piece_mask_boutyou - only_put_piece_mask.astype(np.int).reshape(22, 10)
+            # rinsetu = only_put_piece_around * np.array(self.observation_next).reshape(22, 10)
+            # connect_flag = rinsetu.sum()
+
+            # if(connect_flag > 0):
+            #     connect_diff = connect_next_num - connect_num
+            #     self.reward += torch.FloatTensor([connect_diff])
+            #     print("connect score : {0}".format(connect_diff))
+            ########################    
 
             # メモリに経験を追加
             # self.agent.memorize(self.state, self.action, self.state_next, self.reward)
             self.agent.memorize(self.state_property, self.action, self.state_property_next, self.reward)
+
+            print("state_property : {0}".format(self.state_property))
+            print("state_property_next : {0}".format(self.state_property_next))
+            print("action : {0}".format(self.action))
+            print("reward : {0}".format(self.reward))
 
             # Experience ReplayでQ関数を更新する
             self.agent.update_q_function()
@@ -671,9 +741,9 @@ class Game_Manager(QMainWindow):
             if self.done:
                 # DDQNで追加、2試行に1度、Target Q-NetworkをMainと同じにコピーする
                 if(self.episode % 2 == 0):
-                    self.agent.update_target_q_function()
-
-            self.step += 1
+                    self.agent.update_target_q_function()    
+            else:
+                self.step += 1
 
         else:
             super(Game_Manager, self).timerEvent(event)

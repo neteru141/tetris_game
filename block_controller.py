@@ -32,8 +32,8 @@ class Block_Controller(object):
 
         # search best nextMove -->
         # random sample
-        nextMove["strategy"]["direction"] = action % 4
-        nextMove["strategy"]["x"] = action % 10
+        nextMove["strategy"]["direction"] = action[0].item()
+        nextMove["strategy"]["x"] = action[1].item()
         nextMove["strategy"]["y_operation"] = 1
         nextMove["strategy"]["y_moveblocknum"] = 1
         # search best nextMove <--

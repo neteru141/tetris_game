@@ -19,6 +19,12 @@ import torch
 import torch.nn as nn
 from deep_q_network import DeepQNetwork
 from collections import deque
+from tensorboardX import SummaryWriter
+
+import os
+import shutil
+from random import random, randint, sample
+import numpy as np
 
 def get_option(game_time, manual, use_sample, drop_speed, random_seed, obstacle_height, obstacle_probability, resultlogjson):
     argparser = ArgumentParser()
@@ -57,10 +63,9 @@ def get_option(game_time, manual, use_sample, drop_speed, random_seed, obstacle_
     argparser.add_argument("--num_decay_epochs", type=float, default=2000)
     argparser.add_argument("--num_epochs", type=int, default=3000)
     argparser.add_argument("--save_interval", type=int, default=1000)
-    argparser.add_argument("--replay_memory_size", type=int, default=30000,
-                        help="Number of epoches between testing phases")
-    parser.add_argument("--log_path", type=str, default="tensorboard")
-    parser.add_argument("--saved_path", type=str, default="trained_models")
+    argparser.add_argument("--replay_memory_size", type=int, default=30000, help="Number of epoches between testing phases")
+    argparser.add_argument("--log_path", type=str, default="tensorboard")
+    argparser.add_argument("--saved_path", type=str, default="trained_models")
     return argparser.parse_args()
 
 class Game_Manager(QMainWindow):
@@ -114,24 +119,41 @@ class Game_Manager(QMainWindow):
         if len(args.resultlogjson) != 0:
             self.resultlogjson = args.resultlogjson
 
-        self.num_decay_epochs = args.num_decay_epochs
+        self.width = args.width
+        self.heigth = args.height
+        self.block_size = args.block_size
+        self.batch_size = args.batch_size
+        self.lr = args.lr
+        self.gamma = args.gamma
         self.initial_epsilon = args.initial_epsilon
         self.final_epsilon = args.final_epsilon
+        self.num_decay_epochs = args.num_decay_epochs
+        self.num_epochs = args.num_epochs
+        self.save_interval = args.save_interval
+        self.replay_memory_size = args.replay_memory_size
+        self.log_path = args.log_path
+        self.saved_path = args.saved_path
         
         self.episode = 0
         self.step = 0
         self.num_states = 4
         self.num_actions = 1
         self.model = DeepQNetwork()
-        self.optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=self.lr)
         self.criterion = nn.MSELoss()
-        self.replay_memory = deque(maxlen=args.replay_memory_size)
+        self.replay_memory = deque(maxlen=self.replay_memory_size)
 
         self.init_state_flag = True
+
         self.state = None
-        self.next_actions = None
-        self.next_states = None
+        self.next_state = None
         self.action = None
+        self.reward = None
+
+        if os.path.isdir(self.log_path):
+            shutil.rmtree(self.log_path)
+        os.makedirs(self.log_path)
+        self.writer = SummaryWriter(self.log_path)
 
         self.initUI()
 
@@ -223,68 +245,6 @@ class Game_Manager(QMainWindow):
         self.tboard.updateData()
         self.sidePanel.updateData()
         self.update()
-
-    def get_holes(self, board):
-        board = np.array(board).reshape([22, 10])
-        hole_num = 0
-        col = 0
-        for col in range(0, 10):
-            board_col = board[:, col].tolist()
-            row = 0
-            while row < 22 and board_col[row] == 0:
-                row += 1
-            hole_num += len([x for x in board_col[row+1:] if x==0])
-        
-        return hole_num
-
-    def get_bumpiness_and_height(self, board):
-        board = np.array(board).reshape(22, 10)
-        mask = board != 0
-        invert_heights = np.where(mask.any(axis=0), np.argmax(mask, axis=0), 22)
-        heights = 22 - invert_heights
-        total_height = np.sum(heights)
-        currs = heights[:-1]
-        nexts = heights[1:]
-        diffs = np.abs(currs - nexts)
-        total_bumpiness = np.sum(diffs)
-        return total_bumpiness, total_height
-
-    def get_row_connection(self, board):
-        board = np.array(board).reshape(22, 10)
-        mask = board != 0
-        row_sum = np.sum(mask, axis=1)
-        row_index = np.where(row_sum > 0)[0]
-        max_conect_dict = {}
-        max_conect_total = 0
-        for row in row_index:
-            mask_row = mask[row,:]
-            conect_cnt = 0
-            conect_list = []
-            for col in range(mask_row.shape[0]):
-                if mask_row[col] == True:
-                    conect_cnt += 1
-                else:
-                    conect_list.append(conect_cnt)
-                    conect_cnt = 0
-            max_conect_num = max(conect_list)
-            if max_conect_num != 1:
-                max_conect_total += max_conect_num
-        return max_conect_total
-
-    def get_boutyou_piece_mask(self, board):
-        board = np.array(board).reshape(22, 10)
-        mask = board != 0
-        index = np.where(mask > 0)
-        index_total = len(index[0])
-        for i in range(index_total):
-            if(index[1][i]+1 <= 9):
-                mask[index[0][i], index[1][i]+1] = True
-            if(index[1][i]-1 >= 0):
-                mask[index[0][i], index[1][i]-1] = True
-
-        mask = mask.astype(np.int)
-        return mask
-
     
     def timerEvent(self, event):
         # callback function for user control
@@ -308,8 +268,14 @@ class Game_Manager(QMainWindow):
                                   "y_moveblocknum": "none", # amount of next y movement
                                   },
                             }
-                # get nextMove from GameController
+
                 GameStatus = self.getGameStatus()
+                done = False
+
+                print("### step ###")
+                print(self.step)
+                print("### episode ###")
+                print(self.episode)
 
                 if(self.init_state_flag == True):
                     _, self.state = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus)
@@ -318,24 +284,11 @@ class Game_Manager(QMainWindow):
                     
                     self.init_state_flag = False
 
-
-                # if(self.step == 0):
-                #     bumpiness, height = self.get_bumpiness_and_height(self.observation)
-                #     holes = self.get_holes(self.observation)
-                #     removedlines = 0
-                #     dropdownlines = 0
-                #     current_block = GameStatus["block_info"]["currentShape"]["index"]
-                #     next_block = GameStatus["block_info"]["nextShape"]["index"]
-                #     self.state_property = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
-                #     self.state_property = np.array(self.state_property)
-                #     self.state_property = torch.from_numpy(self.state_property).type(torch.FloatTensor)
-                #     self.state_property = torch.unsqueeze(self.state_property, 0)
-
-                self.next_actions, self.next_states = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus)
-                self.next_actions = np.array(self.next_actions)
-                self.next_actions = torch.from_numpy(self.next_actions).type(torch.FloatTensor)
-                self.next_states = np.array(self.next_states)
-                self.next_states = torch.from_numpy(self.next_states).type(torch.FloatTensor)
+                next_actions, next_states = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus)
+                next_actions = np.array(next_actions)
+                next_actions = torch.from_numpy(next_actions).type(torch.FloatTensor)
+                next_states = np.array(next_states)
+                next_states = torch.from_numpy(next_states).type(torch.FloatTensor)
 
                 print("### next_actions ###")
                 print(next_actions)
@@ -343,118 +296,34 @@ class Game_Manager(QMainWindow):
                 print("### next_states ###")
                 print(next_states)
 
-                model.eval()
+                self.model.eval()
                 with torch.no_grad():
-                    predictions = model(self.next_states)[:, 0]
+                    predictions = self.model(next_states)[:, 0]
                     print("### predictions ###")
                     print(predictions)
 
-                epsilon = opt.final_epsilon + (max(self.num_decay_epochs - self.epoch, 0) * (self.initial_epsilon - self.final_epsilon) / self.num_decay_epochs)
+                epsilon = self.final_epsilon + (max(self.num_decay_epochs - self.episode, 0) * (self.initial_epsilon - self.final_epsilon) / self.num_decay_epochs)
                 print("### epsilon ###")
                 print(epsilon)
                 u = random()
                 random_action = u <= epsilon
 
-                model.train()
+                self.model.train()
                 if random_action:
-                    index = randint(0, len(self.next_states) - 1)
+                    print("### len(next states) ###")
+                    print(len(next_states))
+                    index = randint(0, len(next_states) - 1)
                 else:
                     index = torch.argmax(predictions).item()
 
-                self.next_state = self.next_states[index, :]
-                print("### next_state ###")
+                self.next_state = next_states[index, :]
+                print("### self.next_state ###")
                 print(self.next_state)
-                self.action = self.next_actions[index]
-                print("### action ###")
-                print(self.action) # (position, rotation)
+                self.action = next_actions[index]
+                print("### self.action ###")
+                print(self.action) # (rotation, position)
 
-                ### here!
-                #reward, done = env.step(action, render=True)
-
-                if torch.cuda.is_available():
-                    next_state = next_state.cuda()
-                replay_memory.append([state, reward, next_state, done])
-                if done:
-                    final_score = env.score
-                    final_tetrominoes = env.tetrominoes
-                    final_cleared_lines = env.cleared_lines
-                    state = env.reset()
-                    print("### state done ###")
-                    print(state)
-                    if torch.cuda.is_available():
-                        state = state.cuda()
-                else:
-                    state = next_state
-                    continue
-                if len(replay_memory) < opt.replay_memory_size / 10:
-                    continue
-                epoch += 1
-                print("### epoch ###")
-                print(epoch)
-                batch = sample(replay_memory, min(len(replay_memory), opt.batch_size))
-                state_batch, reward_batch, next_state_batch, done_batch = zip(*batch)
-                state_batch = torch.stack(tuple(state for state in state_batch))
-                reward_batch = torch.from_numpy(np.array(reward_batch, dtype=np.float32)[:, None])
-                next_state_batch = torch.stack(tuple(state for state in next_state_batch))
-
-                if torch.cuda.is_available():
-                    state_batch = state_batch.cuda()
-                    reward_batch = reward_batch.cuda()
-                    next_state_batch = next_state_batch.cuda()
-
-                q_values = model(state_batch)
-                print("### q_values ###")
-                print(q_values)
-                model.eval()
-                with torch.no_grad():
-                    next_prediction_batch = model(next_state_batch)
-                    print("### next prediction batch ###")
-                    print(next_prediction_batch)
-                model.train()
-
-                y_batch = torch.cat(
-                    tuple(reward if done else reward + opt.gamma * prediction for reward, done, prediction in
-                        zip(reward_batch, done_batch, next_prediction_batch)))[:, None]
-
-                print("### y_batch ###")
-                print(y_batch)
-
-                optimizer.zero_grad()
-                loss = criterion(q_values, y_batch)
-                print("### loss ###")
-                print(loss)
-                loss.backward()
-                optimizer.step()
-
-                print("Epoch: {}/{}, Action: {}, Score: {}, Tetrominoes {}, Cleared lines: {}".format(
-                    epoch,
-                    opt.num_epochs,
-                    action,
-                    final_score,
-                    final_tetrominoes,
-                    final_cleared_lines))
-                writer.add_scalar('Train/Score', final_score, epoch - 1)
-                writer.add_scalar('Train/Tetrominoes', final_tetrominoes, epoch - 1)
-                writer.add_scalar('Train/Cleared lines', final_cleared_lines, epoch - 1)
-
-                if epoch > 0 and epoch % opt.save_interval == 0:
-                    torch.save(model, "{}/tetris_{}".format(opt.saved_path, epoch))
-
-            torch.save(model, "{}/tetris".format(opt.saved_path))
-
-                
-
-
-
-                
-                self.nextMove = BLOCK_CONTROLLER.GetNextMove(GameStatus, nextMove, self.action.item())
-
-                if self.manual in ("y", "g"):
-                    # ignore nextMove, for manual controll
-                    self.nextMove["strategy"]["x"] = BOARD_DATA.currentX
-                    self.nextMove["strategy"]["y_moveblocknum"] = 1
-                    self.nextMove["strategy"]["y_operation"] = 0
-                    self.nextMove["strategy"]["direction"] = BOARD_DATA.currentDirection
+                self.nextMove = BLOCK_CONTROLLER.GetNextMove(GameStatus, nextMove, self.action)
 
             if self.nextMove:
                 # shape direction operation
@@ -504,58 +373,14 @@ class Game_Manager(QMainWindow):
             self.UpdateScore(removedlines, dropdownlines)
 
             GameStatus = self.getGameStatus()
-            self.observation_next = GameStatus["field_info"]["backboard"]
 
             self.reward = 0
 
-            # if BOARD_DATA.currentY < 1:
-            #     self.state_next = None
-            #     print("reset episode")
-            #     self.reset_episode()
-            #     self.reward = torch.FloatTensor([Game_Manager.GAMEOVER_SCORE])
-            #     self.done = True
-
-            # if removedlines > 0:
-            #     self.state_next = np.array(self.observation_next)
-            #     self.state_next = torch.from_numpy(self.state_next).type(torch.FloatTensor)
-            #     self.state_next = torch.unsqueeze(self.state_next, 0)
-            #     self.state_next = self.state_next / 7.0
-
-            #     if removedlines == 1:
-            #         linescore = Game_Manager.LINE_SCORE_1
-            #     elif removedlines == 2:
-            #         linescore = Game_Manager.LINE_SCORE_2
-            #     elif removedlines == 3:
-            #         linescore = Game_Manager.LINE_SCORE_3
-            #     elif removedlines == 4:
-            #         linescore = Game_Manager.LINE_SCORE_4
-
-            #     self.reward = torch.FloatTensor([linescore])
-
-            # else:
-            #     self.state_next = np.array(self.observation_next)
-            #     self.state_next = torch.from_numpy(self.state_next).type(torch.FloatTensor)
-            #     self.state_next = torch.unsqueeze(self.state_next, 0)
-            #     self.state_next = self.state_next / 7.0
-            #     self.reward = torch.FloatTensor([0.0])
-
             if BOARD_DATA.currentY < 1:
-                self.state_property_next = None
-                print("reset episode")
-                self.reset_episode()
                 self.reward = torch.FloatTensor([Game_Manager.GAMEOVER_SCORE])
-                self.done = True
+                done = True
 
             elif removedlines > 0:
-                bumpiness, height = self.get_bumpiness_and_height(self.observation_next)
-                holes = self.get_holes(self.observation_next)
-                current_block = GameStatus["block_info"]["currentShape"]["index"]
-                next_block = GameStatus["block_info"]["nextShape"]["index"]
-                self.state_property_next = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
-                self.state_property_next = np.array(self.state_property_next)
-                self.state_property_next = torch.from_numpy(self.state_property_next).type(torch.FloatTensor)
-                self.state_property_next = torch.unsqueeze(self.state_property_next, 0)
-
                 if removedlines == 1:
                     linescore = Game_Manager.LINE_SCORE_1
                 elif removedlines == 2:
@@ -567,67 +392,80 @@ class Game_Manager(QMainWindow):
 
                 self.reward = torch.FloatTensor([linescore])
 
-            else:
-                bumpiness, height = self.get_bumpiness_and_height(self.observation_next)
-                holes = self.get_holes(self.observation_next)
-                current_block = GameStatus["block_info"]["currentShape"]["index"]
-                next_block = GameStatus["block_info"]["nextShape"]["index"]
-                self.state_property_next = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
-                self.state_property_next = np.array(self.state_property_next)
-                self.state_property_next = torch.from_numpy(self.state_property_next).type(torch.FloatTensor)
-                self.state_property_next = torch.unsqueeze(self.state_property_next, 0)
-                self.reward = torch.FloatTensor([0.0])
-
                 
-            ### connect reward ###
-            # connect_num = self.get_row_connection(self.observation)
-            # connect_next_num = self.get_row_connection(self.observation_next)
-            # print("observation : \n {0}".format(np.array(self.observation).reshape(22,10)))
-            # print("connect_num : {0}".format(connect_num))
-            # print("observation_next : \n {0}".format(np.array(self.observation_next).reshape(22,10)))
-            # print("connect_num_next : {0}".format(connect_next_num))
+            self.replay_memory.append([self.state, self.reward, self.next_state, done])
+            
+            if done:
+                print("reset episode")
+                self.reset_episode()
 
+                final_score = GameStatus["judge_info"]["score"]
+                final_tetrominoes = self.step
+                final_cleared_lines = GameStatus["judge_info"]["line"]
 
-            # only_put_piece = np.array(self.observation_next) - np.array(self.observation)
-            # only_put_piece_mask = only_put_piece != 0
-            # only_put_piece_mask_boutyou = self.get_boutyou_piece_mask(only_put_piece)
-            # only_put_piece_around = only_put_piece_mask_boutyou - only_put_piece_mask.astype(np.int).reshape(22, 10)
-            # rinsetu = only_put_piece_around * np.array(self.observation_next).reshape(22, 10)
-            # connect_flag = rinsetu.sum()
+                GameStatus = self.getGameStatus()
+                _, self.state = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus)
+                self.state = np.array(self.state)
+                self.state = torch.from_numpy(self.state).type(torch.FloatTensor)
 
-            # if(connect_flag > 0):
-            #     connect_diff = connect_next_num - connect_num
-            #     self.reward += torch.FloatTensor([connect_diff])
-            #     print("connect score : {0}".format(connect_diff))
-            ########################    
+                if len(self.replay_memory) < self.replay_memory_size / 10:
+                    pass
+                else:
 
-            # メモリに経験を追加
-            # self.agent.memorize(self.state, self.action, self.state_next, self.reward)
-            self.agent.memorize(self.state_property, self.action, self.state_property_next, self.reward)
+                    batch = sample(self.replay_memory, min(len(self.replay_memory), self.batch_size))
+                    state_batch, reward_batch, next_state_batch, done_batch = zip(*batch)
+                    state_batch = torch.stack(tuple(self.state for self.state in state_batch))
+                    reward_batch = torch.from_numpy(np.array(reward_batch, dtype=np.float32)[:, None])
+                    next_state_batch = torch.stack(tuple(self.state for self.state in next_state_batch))
 
-            print("state_property : {0}".format(self.state_property))
-            print("state_property_next : {0}".format(self.state_property_next))
-            print("action : {0}".format(self.action))
-            print("reward : {0}".format(self.reward))
+                    q_values = self.model(state_batch)
+                    print("### q_values ###")
+                    print(q_values)
+                    self.model.eval()
+                    with torch.no_grad():
+                        next_prediction_batch = self.model(next_state_batch)
+                        print("### next prediction batch ###")
+                        print(next_prediction_batch)
+                    self.model.train()
 
-            # Experience ReplayでQ関数を更新する
-            self.agent.update_q_function()
+                    y_batch = torch.cat(
+                        tuple(self.reward if done else self.reward + self.gamma * prediction for self.reward, done, prediction in
+                            zip(reward_batch, done_batch, next_prediction_batch)))[:, None]
+
+                    print("### y_batch ###")
+                    print(y_batch)
+
+                    optimizer.zero_grad()
+                    loss = criterion(q_values, y_batch)
+                    print("### loss ###")
+                    print(loss)
+                    loss.backward()
+                    optimizer.step()
+
+                    print("Epoch: {}/{}, Action: {}, Score: {}, Tetrominoes {}, Cleared lines: {}".format(
+                        epoch,
+                        self.num_epochs,
+                        self.action,
+                        final_score,
+                        final_tetrominoes,
+                        final_cleared_lines))
+                    writer.add_scalar('Train/Score', final_score, self.episode - 1)
+                    writer.add_scalar('Train/Tetrominoes', final_tetrominoes, self.episode - 1)
+                    writer.add_scalar('Train/Cleared lines', final_cleared_lines, self.episode - 1)
+
+                    if self.episode > 0 and self.episode % self.save_interval == 0:
+                        torch.save(self.model, "{}/tetris_{}".format(self.saved_path, self.episode))
+            else:
+                self.state = self.next_state
 
             # init nextMove
             self.nextMove = None
 
-            self.state_property = self.state_property_next
+            # step count up
+            self.step += 1
 
             # update window
             self.updateWindow()
-
-            # 終了時の処理
-            if self.done:
-                # DDQNで追加、2試行に1度、Target Q-NetworkをMainと同じにコピーする
-                if(self.episode % 2 == 0):
-                    self.agent.update_target_q_function()    
-            else:
-                self.step += 1
 
         else:
             super(Game_Manager, self).timerEvent(event)
@@ -686,8 +524,6 @@ class Game_Manager(QMainWindow):
                         "score":"none",
                         "line":"none",
                         "block_index":"none",
-                        "episode":"none",
-                        "step":"none",
                       },
                   "debug_info":
                       {
@@ -775,8 +611,6 @@ class Game_Manager(QMainWindow):
         status["judge_info"]["score"] = self.tboard.score
         status["judge_info"]["line"] = self.tboard.line
         status["judge_info"]["block_index"] = self.block_index
-        status["judge_info"]["episode"] = self.episode
-        status["judge_info"]["step"] = self.step
 
         ## debug_info
         status["debug_info"]["dropdownscore"] = self.tboard.dropdownscore
@@ -864,8 +698,6 @@ class Game_Manager(QMainWindow):
                         "score":"none",
                         "line":"none",
                         "block_index":"none",
-                        "episode":"none",
-                        "step":"none",
                       },
                   }
         # update status
@@ -899,8 +731,6 @@ class Game_Manager(QMainWindow):
         status["judge_info"]["score"] = self.tboard.score
         status["judge_info"]["line"] = self.tboard.line
         status["judge_info"]["block_index"] = self.block_index
-        status["judge_info"]["episode"] = self.episode
-        status["judge_info"]["step"] = self.step
         return json.dumps(status)
 
     def keyPressEvent(self, event):
@@ -1036,40 +866,40 @@ class Board(QFrame):
         self.update()
 
         #if self.game_time >= 0 and elapsed_time > self.game_time:
-        if GAME_MANEGER.step >= 180:
-            # finish game.
-            print("game finish!! elapsed time: " + elapsed_time_str + "/game_time: " + str(self.game_time) + "/step: " + str(GAME_MANEGER.step))
-            print("")
-            print("##### YOUR_RESULT #####")
-            print(status_str)
-            print("")
-            print("##### SCORE DETAIL #####")
-            GameStatus = GAME_MANEGER.getGameStatus()
-            line_score_stat = GameStatus["debug_info"]["line_score_stat"]
-            line_Score = GameStatus["debug_info"]["line_score"]
-            gameover_count = GameStatus["judge_info"]["gameover_count"]
-            score = GameStatus["judge_info"]["score"]
-            dropdownscore = GameStatus["debug_info"]["dropdownscore"]
-            print("  1 line: " + str(line_Score["1"]) + " * " + str(line_score_stat[0]) + " = " + str(line_Score["1"] * line_score_stat[0]))
-            print("  2 line: " + str(line_Score["2"]) + " * " + str(line_score_stat[1]) + " = " + str(line_Score["2"] * line_score_stat[1]))
-            print("  3 line: " + str(line_Score["3"]) + " * " + str(line_score_stat[2]) + " = " + str(line_Score["3"] * line_score_stat[2]))
-            print("  4 line: " + str(line_Score["4"]) + " * " + str(line_score_stat[3]) + " = " + str(line_Score["4"] * line_score_stat[3]))
-            print("  dropdownscore: " + str(dropdownscore))
-            print("  gameover: : " + str(line_Score["gameover"]) + " * " + str(gameover_count) + " = " + str(line_Score["gameover"] * gameover_count))
+        # if GAME_MANEGER.step >= 180:
+        #     # finish game.
+        #     print("game finish!! elapsed time: " + elapsed_time_str + "/game_time: " + str(self.game_time) + "/step: " + str(GAME_MANEGER.step))
+        #     print("")
+        #     print("##### YOUR_RESULT #####")
+        #     print(status_str)
+        #     print("")
+        #     print("##### SCORE DETAIL #####")
+        #     GameStatus = GAME_MANEGER.getGameStatus()
+        #     line_score_stat = GameStatus["debug_info"]["line_score_stat"]
+        #     line_Score = GameStatus["debug_info"]["line_score"]
+        #     gameover_count = GameStatus["judge_info"]["gameover_count"]
+        #     score = GameStatus["judge_info"]["score"]
+        #     dropdownscore = GameStatus["debug_info"]["dropdownscore"]
+        #     print("  1 line: " + str(line_Score["1"]) + " * " + str(line_score_stat[0]) + " = " + str(line_Score["1"] * line_score_stat[0]))
+        #     print("  2 line: " + str(line_Score["2"]) + " * " + str(line_score_stat[1]) + " = " + str(line_Score["2"] * line_score_stat[1]))
+        #     print("  3 line: " + str(line_Score["3"]) + " * " + str(line_score_stat[2]) + " = " + str(line_Score["3"] * line_score_stat[2]))
+        #     print("  4 line: " + str(line_Score["4"]) + " * " + str(line_score_stat[3]) + " = " + str(line_Score["4"] * line_score_stat[3]))
+        #     print("  dropdownscore: " + str(dropdownscore))
+        #     print("  gameover: : " + str(line_Score["gameover"]) + " * " + str(gameover_count) + " = " + str(line_Score["gameover"] * gameover_count))
 
-            print("##### ###### #####")
-            print("")
+        #     print("##### ###### #####")
+        #     print("")
 
-            log_file_path = GAME_MANEGER.resultlogjson
-            if len(log_file_path) != 0:
-                with open(log_file_path, "w") as f:
-                    print("##### OUTPUT_RESULT_LOG_FILE #####")
-                    print(log_file_path)
-                    GameStatusJson = GAME_MANEGER.getGameStatusJson()
-                    f.write(GameStatusJson)
+        #     log_file_path = GAME_MANEGER.resultlogjson
+        #     if len(log_file_path) != 0:
+        #         with open(log_file_path, "w") as f:
+        #             print("##### OUTPUT_RESULT_LOG_FILE #####")
+        #             print(log_file_path)
+        #             GameStatusJson = GAME_MANEGER.getGameStatusJson()
+        #             f.write(GameStatusJson)
                     
-            GAME_MANEGER.done = True
-            GAME_MANEGER.reset_episode()
+        #     GAME_MANEGER.done = True
+        #     GAME_MANEGER.reset_episode()
             #sys.exit(app.exec_())
             #sys.exit(0)
 

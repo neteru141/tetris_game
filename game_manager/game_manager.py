@@ -543,19 +543,23 @@ class Game_Manager(QMainWindow):
 
                 self.done = False
 
-                if(self.step == 0):
-                    bumpiness, height = self.get_bumpiness_and_height(self.observation)
-                    holes = self.get_holes(self.observation)
-                    removedlines = 0
-                    dropdownlines = 0
-                    current_block = GameStatus["block_info"]["currentShape"]["index"]
-                    next_block = GameStatus["block_info"]["nextShape"]["index"]
-                    self.state_property = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
-                    self.state_property = np.array(self.state_property)
-                    self.state_property = torch.from_numpy(self.state_property).type(torch.FloatTensor)
-                    self.state_property = torch.unsqueeze(self.state_property, 0)
+                # if(self.step == 0):
+                #     bumpiness, height = self.get_bumpiness_and_height(self.observation)
+                #     holes = self.get_holes(self.observation)
+                #     removedlines = 0
+                #     dropdownlines = 0
+                #     current_block = GameStatus["block_info"]["currentShape"]["index"]
+                #     next_block = GameStatus["block_info"]["nextShape"]["index"]
+                #     self.state_property = [removedlines, dropdownlines, holes, bumpiness, height, current_block, next_block]
+                #     self.state_property = np.array(self.state_property)
+                #     self.state_property = torch.from_numpy(self.state_property).type(torch.FloatTensor)
+                #     self.state_property = torch.unsqueeze(self.state_property, 0)
 
                 next_actions, next_states = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus, nextMove)
+                next_actions = np.array(next_actions)
+                next_actions = torch.from_numpy(next_actions).type(torch.FloatTensor)
+                next_states = np.array(next_states)
+                next_states = torch.from_numpy(next_states).type(torch.FloatTensor)
 
                 # self.action = self.agent.get_action(self.state_property, self.episode)
 

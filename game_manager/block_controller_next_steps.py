@@ -4,6 +4,7 @@
 from datetime import datetime
 import pprint
 import copy
+import numpy as np
 
 class Block_Controller_Next_Step(object):
 
@@ -22,7 +23,7 @@ class Block_Controller_Next_Step(object):
     #                 in detail see the internal GameStatus data.
     # output
     #    nextMove : nextMove structure which includes next shape position and the other.
-    def GetNextMoveState(self, nextMove, GameStatus):
+    def GetNextMoveState(self, GameStatus):
 
         t1 = datetime.now()
 
@@ -44,6 +45,7 @@ class Block_Controller_Next_Step(object):
         strategy = None
         strategy_list = []
         state_list = []
+        a = []
         # search with current block Shape
         for direction0 in CurrentShapeDirectionRange:
             # search with x range
@@ -52,15 +54,15 @@ class Block_Controller_Next_Step(object):
                 # get board data, as if dropdown block
                 board = self.getBoard(self.board_backboard, self.CurrentShape_class, direction0, x0)
 
-                strategy = [direction0, x0, 1, 1]
+                strategy = [direction0, x0]
                 strategy_list.append(strategy)
+                print(strategy)
+                print(np.array(board).reshape(22,10))
                 # hole_num = self.get_holes(board)
                 # total_bumpiness, total_height = self.get_bumpiness_and_height(board)
-                fullLines, nHoles, nIsolatedBlocks, absDy = self.calcEvaluationValueSample(board)
-                state_list.appned([fullLines, nHoles, nIsolatedBlocks, absDy])
-
-
-
+                # fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num = self.calcEvaluationValueSample(board)
+                fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num = self.calcEvaluationValueSample(board)
+                state_list.append([fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num])
 
                 ###test
                 ###for direction1 in NextShapeDirectionRange:
@@ -74,126 +76,6 @@ class Block_Controller_Next_Step(object):
         # search best nextMove <--
 
         return strategy_list, state_list
-
-    # def get_holes(self, board):
-    #     board = np.array(board).reshape([22, 10])
-    #     hole_num = 0
-    #     col = 0
-    #     for col in range(0, 10):
-    #         board_col = board[:, col].tolist()
-    #         row = 0
-    #         while row < 22 and board_col[row] == 0:
-    #             row += 1
-    #         hole_num += len([x for x in board_col[row+1:] if x==0])
-        
-    #     return hole_num
-
-    # def get_bumpiness_and_height(self, board):
-    #     board = np.array(board).reshape(22, 10)
-    #     mask = board != 0
-    #     invert_heights = np.where(mask.any(axis=0), np.argmax(mask, axis=0), 22)
-    #     heights = 22 - invert_heights
-    #     total_height = np.sum(heights)
-    #     currs = heights[:-1]
-    #     nexts = heights[1:]
-    #     diffs = np.abs(currs - nexts)
-    #     total_bumpiness = np.sum(diffs)
-    #     return total_bumpiness, total_height
-
-    def calcEvaluationValueSample(self, board):
-        #
-        # sample function of evaluate board.
-        #
-        width = self.board_data_width
-        height = self.board_data_height
-
-        # evaluation paramters
-        ## lines to be removed
-        fullLines = 0
-        ## number of holes or blocks in the line.
-        nHoles, nIsolatedBlocks = 0, 0
-        ## absolute differencial value of MaxY
-        absDy = 0
-        ## how blocks are accumlated
-        BlockMaxY = [0] * width
-        holeCandidates = [0] * width
-        holeConfirm = [0] * width
-
-        ### check board
-        # each y line
-        for y in range(height - 1, 0, -1):
-            hasHole = False
-            hasBlock = False
-            # each x line
-            for x in range(width):
-                ## check if hole or block..
-                if board[y * self.board_data_width + x] == self.ShapeNone_index:
-                    # hole
-                    hasHole = True
-                    holeCandidates[x] += 1  # just candidates in each column..
-                else:
-                    # block
-                    hasBlock = True
-                    BlockMaxY[x] = height - y                # update blockMaxY
-                    if holeCandidates[x] > 0:
-                        holeConfirm[x] += holeCandidates[x]  # update number of holes in target column..
-                        holeCandidates[x] = 0                # reset
-                    if holeConfirm[x] > 0:
-                        nIsolatedBlocks += 1                 # update number of isolated blocks
-
-            if hasBlock == True and hasHole == False:
-                # filled with block
-                fullLines += 1
-            elif hasBlock == True and hasHole == True:
-                # do nothing
-                pass
-            elif hasBlock == False:
-                # no block line (and ofcourse no hole)
-                pass
-
-        # nHoles
-        for x in holeConfirm:
-            nHoles += abs(x)
-
-        ### absolute differencial value of MaxY
-        BlockMaxDy = []
-        for i in range(len(BlockMaxY) - 1):
-            val = BlockMaxY[i] - BlockMaxY[i+1]
-            BlockMaxDy += [val]
-        for x in BlockMaxDy:
-            absDy += abs(x)
-
-        #### maxDy
-        #maxDy = max(BlockMaxY) - min(BlockMaxY)
-        #### maxHeight
-        #maxHeight = max(BlockMaxY) - fullLines
-
-        ## statistical data
-        #### stdY
-        #if len(BlockMaxY) <= 0:
-        #    stdY = 0
-        #else:
-        #    stdY = math.sqrt(sum([y ** 2 for y in BlockMaxY]) / len(BlockMaxY) - (sum(BlockMaxY) / len(BlockMaxY)) ** 2)
-        #### stdDY
-        #if len(BlockMaxDy) <= 0:
-        #    stdDY = 0
-        #else:
-        #    stdDY = math.sqrt(sum([y ** 2 for y in BlockMaxDy]) / len(BlockMaxDy) - (sum(BlockMaxDy) / len(BlockMaxDy)) ** 2)
-
-
-        # calc Evaluation Value
-        # score = 0
-        # score = score + fullLines * 10.0           # try to delete line 
-        # score = score - nHoles * 1.0               # try not to make hole
-        # score = score - nIsolatedBlocks * 1.0      # try not to make isolated block
-        # score = score - absDy * 1.0                # try to put block smoothly
-        #score = score - maxDy * 0.3                # maxDy
-        #score = score - maxHeight * 5              # maxHeight
-        #score = score - stdY * 1.0                 # statistical data
-        #score = score - stdDY * 0.01               # statistical data
-
-        # print(score, fullLines, nHoles, nIsolatedBlocks, maxHeight, stdY, stdDY, absDy, BlockMaxY)
-        return fullLines, nHoles, nIsolatedBlocks, absDy
 
     def getSearchXRange(self, Shape_class, direction):
         #
@@ -332,18 +214,18 @@ class Block_Controller_Next_Step(object):
 
 
         # calc Evaluation Value
-        score = 0
-        score = score + fullLines * 10.0           # try to delete line 
-        score = score - nHoles * 1.0               # try not to make hole
-        score = score - nIsolatedBlocks * 1.0      # try not to make isolated block
-        score = score - absDy * 1.0                # try to put block smoothly
+        # score = 0
+        # score = score + fullLines * 10.0           # try to delete line 
+        # score = score - nHoles * 1.0               # try not to make hole
+        # score = score - nIsolatedBlocks * 1.0      # try not to make isolated block
+        # score = score - absDy * 1.0                # try to put block smoothly
         #score = score - maxDy * 0.3                # maxDy
         #score = score - maxHeight * 5              # maxHeight
         #score = score - stdY * 1.0                 # statistical data
         #score = score - stdDY * 0.01               # statistical data
 
         # print(score, fullLines, nHoles, nIsolatedBlocks, maxHeight, stdY, stdDY, absDy, BlockMaxY)
-        return score
+        return fullLines, nHoles, nIsolatedBlocks, absDy
 
 
 BLOCK_CONTROLLER_NEXT_STEP = Block_Controller_Next_Step()

@@ -60,8 +60,8 @@ def get_option(game_time, manual, use_sample, drop_speed, random_seed, obstacle_
     argparser.add_argument("--gamma", type=float, default=0.99)
     argparser.add_argument("--initial_epsilon", type=float, default=1)
     argparser.add_argument("--final_epsilon", type=float, default=1e-3)
-    argparser.add_argument("--num_decay_epochs", type=float, default=2000)
-    argparser.add_argument("--num_epochs", type=int, default=3000)
+    argparser.add_argument("--num_decay_epochs", type=float, default=20000)
+    argparser.add_argument("--num_epochs", type=int, default=30000)
     argparser.add_argument("--save_interval", type=int, default=1000)
     argparser.add_argument("--replay_memory_size", type=int, default=30000, help="Number of epoches between testing phases")
     argparser.add_argument("--log_path", type=str, default="tensorboard")
@@ -150,9 +150,16 @@ class Game_Manager(QMainWindow):
         self.action = None
         self.reward = None
 
+        self.king_of_score = 0
+
         if os.path.isdir(self.log_path):
             shutil.rmtree(self.log_path)
         os.makedirs(self.log_path)
+
+        if os.path.isdir(self.saved_path):
+            shutil.rmtree(self.saved_path)
+        os.makedirs(self.saved_path)
+
         self.writer = SummaryWriter(self.log_path)
 
         self.initUI()
@@ -270,6 +277,8 @@ class Game_Manager(QMainWindow):
                             }
 
                 GameStatus = self.getGameStatus()
+                backboard = GameStatus["field_info"]["backboard"]
+
                 done = False
 
                 print("### step ###")
@@ -278,8 +287,8 @@ class Game_Manager(QMainWindow):
                 print(self.episode)
 
                 if(self.init_state_flag == True):
-                    _, self.state = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus)
-                    self.state = np.array(self.state)
+                    fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num = BLOCK_CONTROLLER_NEXT_STEP.calcEvaluationValueSample(backboard)
+                    self.state = np.array([fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num])
                     self.state = torch.from_numpy(self.state).type(torch.FloatTensor)
                     
                     self.init_state_flag = False
@@ -391,8 +400,8 @@ class Game_Manager(QMainWindow):
                     linescore = Game_Manager.LINE_SCORE_4
 
                 self.reward = torch.FloatTensor([linescore])
-
-                
+            print("### state memory appned ###")
+            print(self.state)
             self.replay_memory.append([self.state, self.reward, self.next_state, done])
             
             if done:
@@ -404,8 +413,10 @@ class Game_Manager(QMainWindow):
                 final_cleared_lines = GameStatus["judge_info"]["line"]
 
                 GameStatus = self.getGameStatus()
-                _, self.state = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus)
-                self.state = np.array(self.state)
+                backboard = GameStatus["field_info"]["backboard"]
+
+                fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num = BLOCK_CONTROLLER_NEXT_STEP.calcEvaluationValueSample(backboard)
+                self.state = np.array([fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num])
                 self.state = torch.from_numpy(self.state).type(torch.FloatTensor)
 
                 if len(self.replay_memory) < self.replay_memory_size / 10:
@@ -435,26 +446,31 @@ class Game_Manager(QMainWindow):
                     print("### y_batch ###")
                     print(y_batch)
 
-                    optimizer.zero_grad()
-                    loss = criterion(q_values, y_batch)
+                    self.optimizer.zero_grad()
+                    loss = self.criterion(q_values, y_batch)
                     print("### loss ###")
                     print(loss)
                     loss.backward()
-                    optimizer.step()
+                    self.optimizer.step()
 
-                    print("Epoch: {}/{}, Action: {}, Score: {}, Tetrominoes {}, Cleared lines: {}".format(
-                        epoch,
+                    print("Episode: {}/{}, Action: {}, Score: {}, Tetrominoes {}, Cleared lines: {}".format(
+                        self.episode,
                         self.num_epochs,
                         self.action,
                         final_score,
                         final_tetrominoes,
                         final_cleared_lines))
-                    writer.add_scalar('Train/Score', final_score, self.episode - 1)
-                    writer.add_scalar('Train/Tetrominoes', final_tetrominoes, self.episode - 1)
-                    writer.add_scalar('Train/Cleared lines', final_cleared_lines, self.episode - 1)
+                    self.writer.add_scalar('Train/Score', final_score, self.episode - 1)
+                    self.writer.add_scalar('Train/Tetrominoes', final_tetrominoes, self.episode - 1)
+                    self.writer.add_scalar('Train/Cleared lines', final_cleared_lines, self.episode - 1)
 
                     if self.episode > 0 and self.episode % self.save_interval == 0:
                         torch.save(self.model, "{}/tetris_{}".format(self.saved_path, self.episode))
+
+                    if final_score > self.king_of_score:
+                        torch.save(self.model, "{}/tetris_{}_{}_{}".format(self.saved_path, self.episode, self.step, final_score))
+                        self.king_of_score = final_score
+
             else:
                 self.state = self.next_state
 

@@ -56,8 +56,6 @@ class Block_Controller_Next_Step(object):
 
                 strategy = [direction0, x0]
                 strategy_list.append(strategy)
-                print(strategy)
-                print(np.array(board).reshape(22,10))
                 # hole_num = self.get_holes(board)
                 # total_bumpiness, total_height = self.get_bumpiness_and_height(board)
                 # fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num = self.calcEvaluationValueSample(board)

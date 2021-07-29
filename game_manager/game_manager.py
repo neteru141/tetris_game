@@ -8,6 +8,7 @@ from PyQt5.QtGui import QPainter, QColor
 
 from board_manager import BOARD_DATA, Shape
 from block_controller import BLOCK_CONTROLLER
+from block_controller_next_steps import BLOCK_CONTROLLER_NEXT_STEP
 
 from argparse import ArgumentParser
 import time
@@ -542,12 +543,6 @@ class Game_Manager(QMainWindow):
 
                 self.done = False
 
-                # self.observation = GameStatus["field_info"]["withblock"]
-                # self.state = np.array(self.observation)
-                # self.state = torch.from_numpy(self.state).type(torch.FloatTensor)  # numpy変数をPyTorchのテンソルに変換
-                # self.state = torch.unsqueeze(self.state, 0)
-                # self.state = self.state / 7.0
-
                 if(self.step == 0):
                     bumpiness, height = self.get_bumpiness_and_height(self.observation)
                     holes = self.get_holes(self.observation)
@@ -560,8 +555,9 @@ class Game_Manager(QMainWindow):
                     self.state_property = torch.from_numpy(self.state_property).type(torch.FloatTensor)
                     self.state_property = torch.unsqueeze(self.state_property, 0)
 
-                # self.action = self.agent.get_action(self.state, self.episode)
-                self.action = self.agent.get_action(self.state_property, self.episode)
+                next_actions, next_states = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus, nextMove)
+
+                # self.action = self.agent.get_action(self.state_property, self.episode)
 
                 self.nextMove = BLOCK_CONTROLLER.GetNextMove(GameStatus, nextMove, self.action.item())
 

@@ -157,7 +157,7 @@ class BoardData(object):
                 self.nextShapeIndexCnt = 1
         else:
             # random value
-            nextShapeIndex = np_randomShape.random.randint(1, 7)
+            nextShapeIndex = np_randomShape.random.randint(1, 8)
         return nextShapeIndex
 
     def createNewPiece(self):

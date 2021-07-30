@@ -142,16 +142,6 @@ class Game_Manager(QMainWindow):
         self.action = None
         self.reward = None
 
-        if os.path.isdir(self.log_path):
-            shutil.rmtree(self.log_path)
-        os.makedirs(self.log_path)
-
-        if os.path.isdir(self.saved_path):
-            shutil.rmtree(self.saved_path)
-        os.makedirs(self.saved_path)
-
-        self.writer = SummaryWriter(self.log_path)
-
         self.initUI()
 
     def initUI(self):
@@ -722,7 +712,7 @@ class Board(QFrame):
 
         if self.game_time >= 0 and elapsed_time > self.game_time:
             # finish game.
-            print("game finish!! elapsed time: " + elapsed_time_str + "/game_time: " + str(self.game_time) + "/step: " + str(GAME_MANEGER.step))
+            print("game finish!! elapsed time: " + elapsed_time_str + "/game_time: " + str(self.game_time))
             print("")
             print("##### YOUR_RESULT #####")
             print(status_str)

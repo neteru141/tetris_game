@@ -18,8 +18,6 @@ import pprint
 import torch
 import torch.nn as nn
 from deep_q_network import DeepQNetwork
-from collections import deque
-from tensorboardX import SummaryWriter
 
 import os
 import shutil

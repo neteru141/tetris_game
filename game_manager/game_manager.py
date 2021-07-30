@@ -60,8 +60,8 @@ def get_option(game_time, manual, use_sample, drop_speed, random_seed, obstacle_
     argparser.add_argument("--gamma", type=float, default=0.99)
     argparser.add_argument("--initial_epsilon", type=float, default=1)
     argparser.add_argument("--final_epsilon", type=float, default=1e-3)
-    argparser.add_argument("--num_decay_epochs", type=float, default=20000)
-    argparser.add_argument("--num_epochs", type=int, default=30000)
+    argparser.add_argument("--num_decay_epochs", type=float, default=2000)
+    argparser.add_argument("--num_epochs", type=int, default=3000)
     argparser.add_argument("--save_interval", type=int, default=1000)
     argparser.add_argument("--replay_memory_size", type=int, default=30000, help="Number of epoches between testing phases")
     argparser.add_argument("--log_path", type=str, default="tensorboard")
@@ -387,6 +387,10 @@ class Game_Manager(QMainWindow):
 
             if BOARD_DATA.currentY < 1:
                 self.reward = torch.FloatTensor([Game_Manager.GAMEOVER_SCORE])
+                done = True
+
+            elif self.step >= 180:
+                self.reward = torch.FloatTensor([10.0])
                 done = True
 
             elif removedlines > 0:

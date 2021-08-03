@@ -277,7 +277,6 @@ class Game_Manager(QMainWindow):
                             }
 
                 GameStatus = self.getGameStatus()
-                backboard = GameStatus["field_info"]["backboard"]
 
                 done = False
 
@@ -287,10 +286,10 @@ class Game_Manager(QMainWindow):
                 print(self.episode)
 
                 if(self.init_state_flag == True):
+                    backboard = GameStatus["field_info"]["backboard"]
                     fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num = BLOCK_CONTROLLER_NEXT_STEP.calcEvaluationValueSample(backboard)
                     self.state = np.array([fullLines_num, nHoles_num, nIsolatedBlocks_num, absDy_num])
                     self.state = torch.from_numpy(self.state).type(torch.FloatTensor)
-                    
                     self.init_state_flag = False
 
                 next_actions, next_states = BLOCK_CONTROLLER_NEXT_STEP.GetNextMoveState(GameStatus)
@@ -304,6 +303,9 @@ class Game_Manager(QMainWindow):
 
                 print("### next_states ###")
                 print(next_states)
+                
+                print("### next_states_size ###")
+                print(next_states.size())
 
                 self.model.eval()
                 with torch.no_grad():
